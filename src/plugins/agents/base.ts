@@ -171,6 +171,7 @@ interface RunningExecution {
   stdout: string;
   stderr: string;
   interrupted: boolean;
+  timedOut: boolean;
   resolve: (result: AgentExecutionResult) => void;
   reject: (error: Error) => void;
   timeoutId?: ReturnType<typeof setTimeout>;
@@ -703,6 +704,7 @@ export abstract class BaseAgentPlugin implements AgentPlugin {
         stdout: '',
         stderr: '',
         interrupted: false,
+        timedOut: false,
         resolve: resolvePromise!,
         reject: rejectPromise!,
         options,
@@ -774,6 +776,7 @@ export abstract class BaseAgentPlugin implements AgentPlugin {
       if (timeout > 0) {
         execution.timeoutId = setTimeout(() => {
           if (this.executions.has(executionId)) {
+            execution.timedOut = true;
             proc.kill('SIGTERM');
             // Give it 5 seconds to terminate gracefully
             setTimeout(() => {
@@ -911,11 +914,11 @@ export abstract class BaseAgentPlugin implements AgentPlugin {
     code: number | null,
     signal: NodeJS.Signals | null
   ): AgentExecutionStatus {
-    if (execution.interrupted) {
-      return 'interrupted';
+    if (execution.timedOut) {
+      return 'timeout';
     }
-    if (signal === 'SIGTERM' || signal === 'SIGKILL') {
-      return execution.timeoutId ? 'timeout' : 'interrupted';
+    if (execution.interrupted || signal === 'SIGTERM' || signal === 'SIGKILL') {
+      return 'interrupted';
     }
     return code === 0 ? 'completed' : 'failed';
   }

@@ -51,6 +51,7 @@ if (!fixturePath) {
 const agent = new FixtureAgentPlugin();
 await agent.initialize({ command: fixturePath });
 const result = await agent.execute(mode, [], {
+  timeout: Number(process.env.AGENT_TIMEOUT_MS ?? 0),
   env: process.env.AGENT_CHILD_PID_FILE
     ? { AGENT_CHILD_PID_FILE: process.env.AGENT_CHILD_PID_FILE }
     : undefined,

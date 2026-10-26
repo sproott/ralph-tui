@@ -67,6 +67,42 @@ describe('BaseAgentPlugin process exit completion', () => {
     }
   }
 
+  test.skipIf(platform() === 'win32')(
+    'should report timeout when the process handles the deadline signal and exits zero',
+    { timeout: 10000 },
+    async () => {
+      const env = { AGENT_FIXTURE_PATH: fixturePath, AGENT_TIMEOUT_MS: '500' };
+
+      const result = await runFixture('timeout-zero', env);
+
+      expect(result.status, 'An expired deadline must remain authoritative after a graceful exit').toBe('timeout');
+      expect(result.exitCode, 'The fixture must exit zero to exercise graceful timeout handling').toBe(0);
+      expect(result.stdout, 'The fixture must handle the deadline signal').toContain('handled timeout');
+    },
+  );
+
+  test.skipIf(platform() === 'win32')(
+    'should report completion when the process exits before its scheduled deadline',
+    async () => {
+      const env = { AGENT_FIXTURE_PATH: fixturePath, AGENT_TIMEOUT_MS: '1000' };
+
+      const result = await runFixture('clean', env);
+
+      expect(result.status, 'Scheduling a deadline must not classify an early exit as timed out').toBe('completed');
+    },
+  );
+
+  test.skipIf(platform() === 'win32')(
+    'should report interruption when SIGTERM occurs before the scheduled deadline',
+    async () => {
+      const env = { AGENT_FIXTURE_PATH: fixturePath, AGENT_TIMEOUT_MS: '1000' };
+
+      const result = await runFixture('self-term', env);
+
+      expect(result.status, 'A pending deadline must not be mistaken for an expired deadline').toBe('interrupted');
+    },
+  );
+
   test('completes when an inherited stdio holder outlives the agent', async () => {
     if (platform() === 'win32') {
       return;

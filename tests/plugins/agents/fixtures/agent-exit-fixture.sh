@@ -9,6 +9,14 @@ case "$mode" in
   clean)
     printf '%s\n' 'clean output'
     ;;
+  timeout-zero)
+    trap 'printf "%s\n" "handled timeout"; exit 0' TERM
+    printf '%s\n' 'ready'
+    while :; do sleep 0.05; done
+    ;;
+  self-term)
+    kill -TERM "$$"
+    ;;
   hold)
     printf '%s\n' 'initial output'
     sleep 30 &
