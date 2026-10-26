@@ -370,6 +370,12 @@ export interface AgentPlugin {
   readonly meta: AgentPluginMeta;
 
   /**
+   * Restrict completion signals to eligible agent responses. Structured output
+   * without a valid final response returns an empty string, never raw output.
+   */
+  extractCompletionText?(stdout: string): string;
+
+  /**
    * Initialize the plugin with configuration.
    * Called once when the plugin is loaded.
    * @param config Plugin-specific configuration options

@@ -5,7 +5,7 @@
  */
 
 import { spawn } from 'node:child_process';
-import { BaseAgentPlugin, findCommandPath, quoteForWindowsShell } from '../base.js';
+import { BaseAgentPlugin, findCommandPath, quoteForWindowsShell, STREAM_TRUNCATED_PREFIX } from '../base.js';
 import { processAgentEvents, processAgentEventsToSegments, type AgentDisplayEvent } from '../output-formatting.js';
 import type {
   AgentPluginMeta,
@@ -193,6 +193,51 @@ export class PiAgentPlugin extends BaseAgentPlugin {
     if (typeof config.timeout === 'number' && config.timeout > 0) {
       this.defaultTimeout = config.timeout;
     }
+  }
+
+  public extractCompletionText(stdout: string): string {
+    let completionText = '';
+    let structured = false;
+    let malformed = false;
+
+    const truncated = stdout.startsWith(STREAM_TRUNCATED_PREFIX);
+    const retained = truncated ? stdout.slice(STREAM_TRUNCATED_PREFIX.length) : stdout;
+    for (const [index, line] of retained.split('\n').entries()) {
+      if (!line.trim()) continue;
+
+      let parsed: unknown;
+      try {
+        parsed = JSON.parse(line);
+      } catch {
+        if (!truncated || index !== 0) malformed = true;
+        continue;
+      }
+      if (parsed === null || typeof parsed !== 'object' || Array.isArray(parsed)) continue;
+      const event = parsed as Record<string, unknown>;
+      if (typeof event.type !== 'string') continue;
+      structured = true;
+
+      if (event.type === 'message_start' ||
+          (event.type === 'agent_settled' && event.aborted === true)) {
+        completionText = '';
+      } else if (event.type === 'message_end') {
+        completionText = '';
+        if (event.message === null || typeof event.message !== 'object' || Array.isArray(event.message)) continue;
+        const message = event.message as Record<string, unknown>;
+        if (message.role !== 'assistant' || message.stopReason !== 'stop' || !Array.isArray(message.content)) continue;
+
+        for (const block of message.content as unknown[]) {
+          if (block === null || typeof block !== 'object' || Array.isArray(block)) continue;
+          const content = block as Record<string, unknown>;
+          if (content.type === 'text' && typeof content.text === 'string') {
+            completionText += content.text;
+          }
+        }
+      }
+    }
+
+    if (this.mode === 'text' && !structured) return stdout;
+    return malformed ? '' : completionText;
   }
 
   override async detect(): Promise<AgentDetectResult> {

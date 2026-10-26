@@ -5,6 +5,7 @@
 
 import { describe, test, expect, beforeEach, afterEach } from 'bun:test';
 import { PiAgentPlugin, parsePiJsonLine } from '../../src/plugins/agents/builtin/pi.js';
+import { __test__ as baseAgentTestHelpers } from '../../src/plugins/agents/base.js';
 import type {
   AgentFileContext,
   AgentExecuteOptions,
@@ -163,6 +164,193 @@ describe('PiAgentPlugin', () => {
     test('ignores zero timeout', async () => {
       await plugin.initialize({ timeout: 0 });
       expect(await plugin.isReady()).toBe(true);
+    });
+  });
+
+  describe('extractCompletionText', () => {
+    const marker = '<promise>COMPLETE</promise>';
+    const jsonl = (...events: unknown[]): string => events.map(event => JSON.stringify(event)).join('\n');
+    const assistantEnd = (text: string, stopReason = 'stop') => ({
+      type: 'message_end',
+      message: { role: 'assistant', stopReason, content: [{ type: 'text', text }] },
+    });
+
+    test('should return final text blocks when the last assistant response succeeds', () => {
+      const stdout = jsonl(
+        { type: 'agent_start' },
+        { type: 'message_start', message: { role: 'user', content: marker } },
+        { type: 'message_end', message: { role: 'user', content: marker } },
+        assistantEnd('Intermediate', 'toolUse'),
+        { type: 'message_end', message: { role: 'toolResult', toolCallId: 'call-1', toolName: 'bash', content: [{ type: 'text', text: marker }], isError: false } },
+        { type: 'message_start', message: { role: 'assistant', content: [] } },
+        { type: 'message_end', message: { role: 'assistant', stopReason: 'stop', content: [
+          { type: 'thinking', thinking: 'private reasoning' },
+          { type: 'text', text: 'Done.\n' },
+          { type: 'text', text: marker },
+        ] } },
+        { type: 'agent_end', messages: [] },
+      );
+
+      const result = plugin.extractCompletionText(stdout);
+
+      expect(result, 'Only final successful assistant text blocks should be returned').toBe(`Done.\n${marker}`);
+    });
+
+    test('should replace earlier text when another successful assistant response ends', () => {
+      const stdout = jsonl(assistantEnd(marker), assistantEnd('Still blocked'));
+
+      const result = plugin.extractCompletionText(stdout);
+
+      expect(result, 'Earlier assistant responses must not be concatenated').toBe('Still blocked');
+    });
+
+    test.each(['toolUse', 'error', 'aborted', 'length', undefined])(
+      'should clear earlier completion when the latest assistant stop reason is %s', (stopReason) => {
+        const stdout = jsonl(assistantEnd(marker), {
+          type: 'message_end',
+          message: { role: 'assistant', stopReason, content: [{ type: 'text', text: marker }] },
+        });
+
+        const result = plugin.extractCompletionText(stdout);
+
+        expect(result, 'Only stopReason stop may authorize completion').toBe('');
+      },
+    );
+
+    test.each(['assistant', 'toolResult', 'user'])(
+      'should clear earlier completion when a later %s message remains unfinished', (role) => {
+        const stdout = jsonl(assistantEnd(marker),
+          { type: 'message_start', message: { role, content: [] } },
+          { type: 'message_update', assistantMessageEvent: { type: 'text_delta', delta: marker } },
+        );
+
+        const result = plugin.extractCompletionText(stdout);
+
+        expect(result, 'An unfinished later message must invalidate earlier completion').toBe('');
+      },
+    );
+
+    test.each([
+      { role: 'user', content: marker },
+      { role: 'user', content: [{ type: 'text', text: marker }] },
+      { role: 'toolResult', toolCallId: 'call-1', toolName: 'bash', content: [{ type: 'text', text: marker }], isError: false },
+      { role: 'toolResult', toolCallId: 'call-1', toolName: 'bash', content: marker, isError: false },
+      { content: [{ type: 'text', text: marker }], stopReason: 'stop' },
+    ])('should clear earlier completion when a non-assistant message ends with %j', (message) => {
+      const stdout = jsonl(assistantEnd(marker), { type: 'message_end', message });
+
+      const result = plugin.extractCompletionText(stdout);
+
+      expect(result, 'User and tool output must never authorize completion').toBe('');
+    });
+
+    test('should exclude hidden markers when only thinking and tool blocks contain them', () => {
+      const stdout = jsonl({ type: 'message_end', message: {
+        role: 'assistant', stopReason: 'stop', content: [
+          { type: 'thinking', thinking: marker },
+          { type: 'toolCall', id: 'call-1', name: 'bash', arguments: { command: `echo ${marker}` } },
+          { type: 'text', text: 'Blocked' },
+        ],
+      } });
+
+      const result = plugin.extractCompletionText(stdout);
+
+      expect(result, 'Thinking and tool-call payloads must not enter completion text').toBe('Blocked');
+    });
+
+    test('should clear completion when the agent settles as aborted', () => {
+      const stdout = jsonl(assistantEnd(marker), { type: 'agent_settled', aborted: true });
+
+      const result = plugin.extractCompletionText(stdout);
+
+      expect(result, 'Aborted settlement must invalidate successful-looking output').toBe('');
+    });
+
+    test.each([
+      '', marker, '{broken', 'null', '[]', '42',
+      JSON.stringify({ type: 'unknown', text: marker }),
+      JSON.stringify({ type: 'message_update', assistantMessageEvent: { type: 'text_delta', delta: marker } }),
+      JSON.stringify({ type: 'message_end' }),
+      JSON.stringify({ type: 'message_end', message: { role: 'assistant', stopReason: 'stop', content: marker } }),
+      JSON.stringify({ type: 'message_end', message: { role: 'assistant', stopReason: 'stop', content: [null, [], { type: 'text', text: 42 }] } }),
+    ])('should fail closed when JSON mode receives invalid or non-final output %j', (stdout) => {
+      const result = plugin.extractCompletionText(stdout);
+
+      expect(result, 'JSON mode must never fall back to raw stdout').toBe('');
+    });
+
+    test('should fail closed when malformed JSON follows a successful response', () => {
+      const stdout = `${jsonl(assistantEnd(marker))}\n{"type":"message_start"`;
+
+      const result = plugin.extractCompletionText(stdout);
+
+      expect(result, 'A truncated later event must not preserve an earlier marker').toBe('');
+    });
+
+    test('should preserve final completion when the stdout limit cuts an earlier JSON record', () => {
+      const stdout = jsonl(
+        { type: 'message_end', message: { role: 'user', content: 'x'.repeat(1000) } },
+        assistantEnd(marker),
+      );
+      const truncated = baseAgentTestHelpers.appendWithCharLimit('', stdout, 256);
+
+      const result = plugin.extractCompletionText(truncated);
+
+      expect(result, 'An intact final response must survive bounded stdout truncation').toBe(marker);
+    });
+
+    test('should preserve final completion when the stdout limit cuts exactly at a record boundary', () => {
+      const finalResponse = jsonl(assistantEnd(marker));
+      const prefixLength = '[...agent output truncated in memory...]\n'.length;
+      const stdout = `${'x'.repeat(1000)}\n${finalResponse}`;
+      const truncated = baseAgentTestHelpers.appendWithCharLimit('', stdout, prefixLength + finalResponse.length);
+
+      const result = plugin.extractCompletionText(truncated);
+
+      expect(result, 'A complete first retained record must not be discarded').toBe(marker);
+    });
+
+    test('should reject completion when a later JSON record is malformed after stdout truncation', () => {
+      const stdout = `${jsonl(
+        { type: 'message_end', message: { role: 'user', content: 'x'.repeat(1000) } },
+        assistantEnd(marker),
+      )}\n{"type":"message_start"`;
+      const truncated = baseAgentTestHelpers.appendWithCharLimit('', stdout, 256);
+
+      const result = plugin.extractCompletionText(truncated);
+
+      expect(result, 'Only the truncated leading fragment may be ignored').toBe('');
+    });
+
+    test('should preserve plain output when text mode has no structured events', async () => {
+      await plugin.initialize({ mode: 'text' });
+      const stdout = `Done.\n${marker}\n`;
+
+      const result = plugin.extractCompletionText(stdout);
+
+      expect(result, 'Explicit text mode should preserve plain stdout unchanged').toBe(stdout);
+    });
+
+    test('should filter structured output when tracing forces JSON in text mode', async () => {
+      await plugin.initialize({ mode: 'text' });
+      const stdout = jsonl(
+        { type: 'message_end', message: { role: 'user', content: marker } },
+        assistantEnd('Blocked'),
+      );
+
+      const result = plugin.extractCompletionText(stdout);
+
+      expect(result, 'Structured events must use final assistant extraction even in text mode').toBe('Blocked');
+    });
+
+    test('should fail closed when text mode receives structured output without a final response', async () => {
+      await plugin.initialize({ mode: 'text' });
+      const stdout = jsonl({ type: 'agent_start' },
+        { type: 'message_update', assistantMessageEvent: { type: 'text_delta', delta: marker } });
+
+      const result = plugin.extractCompletionText(stdout);
+
+      expect(result, 'Recognized JSON streams must never use raw text fallback').toBe('');
     });
   });
 

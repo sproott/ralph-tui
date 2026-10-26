@@ -1445,14 +1445,20 @@ export class ExecutionEngine {
       const durationMs = endedAt.getTime() - startedAt.getTime();
 
       // Check for completion signal
-      const promiseComplete = PROMISE_COMPLETE_PATTERN.test(agentResult.stdout);
+      const completionText =
+        this.agent!.extractCompletionText?.(agentResult.stdout) ?? agentResult.stdout;
+      const promiseComplete = PROMISE_COMPLETE_PATTERN.test(completionText);
 
       // Determine if task was completed
       // IMPORTANT: Only use the explicit <promise>COMPLETE</promise> signal.
       // Exit code 0 alone does NOT indicate task completion - an agent may exit
       // cleanly after asking clarification questions or hitting a blocker.
       // See: https://github.com/subsy/ralph-tui/issues/259
-      const taskCompleted = promiseComplete;
+      const executionSucceeded =
+        agentResult.status === 'completed' &&
+        !agentResult.interrupted &&
+        (agentResult.exitCode === undefined || agentResult.exitCode === 0);
+      const taskCompleted = executionSucceeded && promiseComplete;
 
       // Update tracker if task completed
       // In worker mode (forcedTask set), skip tracker update — the ParallelExecutor

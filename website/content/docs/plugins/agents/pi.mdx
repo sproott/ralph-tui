@@ -205,6 +205,12 @@ When Ralph TUI executes a task with Pi:
 4. **Stream in real-time**: Shows thinking and tool calls as they happen
 5. **Handle completion**: Reports final results with usage stats
 
+### Task Completion
+
+In JSON mode, the completion marker must appear in text blocks of the last completed assistant response with `stopReason: "stop"`. Markers in echoed prompts, tool results, thinking, or earlier responses do not complete the task. Malformed JSON, an unfinished later message, or an aborted settlement prevents completion. When the stdout buffer truncates earlier output, its known prefix and partial leading record are ignored; complete retained records still determine completion. Plain stdout remains supported when text mode is selected and the output is not structured JSON.
+
+Task completion and automatic commits also require a completed, uninterrupted execution with no reported nonzero exit code. A completion marker cannot override a reported failed, timed-out, or interrupted execution result. These checks validate the completion signal; they do not independently verify the agent's implementation or test claims.
+
 ### CLI Arguments
 
 Ralph TUI builds these arguments:

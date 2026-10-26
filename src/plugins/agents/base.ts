@@ -203,7 +203,7 @@ const MAX_EXECUTION_STREAM_CHARS = 2_000_000;
 /**
  * Prefix added when stream output is truncated in memory.
  */
-const STREAM_TRUNCATED_PREFIX = '[...agent output truncated in memory...]\n';
+export const STREAM_TRUNCATED_PREFIX = '[...agent output truncated in memory...]\n';
 
 // Balances capturing late descendant output against delaying completed agents.
 export const STDIO_DRAIN_GRACE_PERIOD_MS = 2000;
